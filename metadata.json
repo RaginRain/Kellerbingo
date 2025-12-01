@@ -1,0 +1,7 @@
+{
+  "name": "Bingo Master AI",
+  "description": "Eine intelligente Bingo-App, die Scheine per Kamera scannt, Zahlen extrahiert und das Spiel automatisch verfolgt.",
+  "requestFramePermissions": [
+    "camera"
+  ]
+}
