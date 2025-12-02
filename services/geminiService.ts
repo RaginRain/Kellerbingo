@@ -47,14 +47,14 @@ const loadImage = (src: string): Promise<HTMLImageElement> => {
     });
 };
 
-const createBinaryCanvas = (img: HTMLImageElement): { ctx: CanvasRenderingContext2D, width: number, height: number, binaryData: Uint8Array } => {
+const createBinaryCanvas = (source: HTMLImageElement | HTMLCanvasElement): { ctx: CanvasRenderingContext2D, width: number, height: number, binaryData: Uint8Array } => {
     const canvas = document.createElement('canvas');
-    canvas.width = img.width;
-    canvas.height = img.height;
+    canvas.width = source.width;
+    canvas.height = source.height;
     const ctx = canvas.getContext('2d', { willReadFrequently: true });
     if (!ctx) throw new Error("Canvas failed");
 
-    ctx.drawImage(img, 0, 0);
+    ctx.drawImage(source, 0, 0);
     const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
     const data = imageData.data;
 
@@ -402,9 +402,9 @@ const generateCompositeCanvas = (
                     h: cellSize
                 };
 
-                // Crop 32% margin for numbers (Safe center focus)
-                const cropMarginX = cell.w * 0.32;
-                const cropMarginY = cell.h * 0.32;
+                // Crop 20% margin for numbers (Widened view)
+                const cropMarginX = cell.w * 0.20;
+                const cropMarginY = cell.h * 0.20;
                 
                 const srcX = Math.floor(cell.x + cropMarginX);
                 const srcY = Math.floor(cell.y + cropMarginY);
@@ -457,8 +457,8 @@ const generateCompositeCanvas = (
                 h: cellSize 
             };
 
-            // Crop 15% margin for ID (Vertical)
-            const cropMarginY = safeH * 0.15; 
+            // Crop 25% margin for ID (Vertical Zoom)
+            const cropMarginY = safeH * 0.25; 
 
             if (safeW > 10 && safeH > 10) {
                 try {
@@ -548,9 +548,37 @@ const detectTicketsInImage = (binaryCtx: CanvasRenderingContext2D, width: number
 export const validateTicketImage = async (imageSrc: string): Promise<ValidationResult> => {
     const img = await loadImage(imageSrc);
     // Reuse binarization logic but don't need the heavy processing context
-    const { ctx, width, height, binaryData } = createBinaryCanvas(img);
+    let { ctx, width, height, binaryData } = createBinaryCanvas(img);
     
-    const detectedTickets = detectTicketsInImage(ctx, width, height, binaryData);
+    let detectedTickets = detectTicketsInImage(ctx, width, height, binaryData);
+    let correctedImage: string | undefined = undefined;
+
+    // Retry with 90 degree rotation if no tickets found
+    if (detectedTickets.length === 0) {
+        const rotCanvas = document.createElement('canvas');
+        rotCanvas.width = height; // Swap
+        rotCanvas.height = width;
+        const rotCtx = rotCanvas.getContext('2d');
+        if (rotCtx) {
+            rotCtx.translate(rotCanvas.width / 2, rotCanvas.height / 2);
+            rotCtx.rotate(90 * Math.PI / 180);
+            rotCtx.drawImage(img, -width / 2, -height / 2);
+            
+            const res2 = createBinaryCanvas(rotCanvas);
+            const tickets2 = detectTicketsInImage(res2.ctx, res2.width, res2.height, res2.binaryData);
+
+            if (tickets2.length > 0) {
+                // Success with rotation! Update variables
+                ctx = res2.ctx;
+                width = res2.width;
+                height = res2.height;
+                binaryData = res2.binaryData;
+                detectedTickets = tickets2;
+                // Capture the clean rotated image BEFORE drawing green boxes
+                correctedImage = res2.ctx.canvas.toDataURL('image/png'); 
+            }
+        }
+    }
     
     // Draw validation overlay (Green boxes for detected tickets)
     ctx.lineWidth = 4;
@@ -606,7 +634,8 @@ export const validateTicketImage = async (imageSrc: string): Promise<ValidationR
         isValid,
         message,
         ticketCount: detectedTickets.length,
-        overlayImage: ctx.canvas.toDataURL('image/jpeg', 0.6)
+        overlayImage: ctx.canvas.toDataURL('image/jpeg', 0.6),
+        correctedImage // Return the rotated image if applied
     };
 };
 
@@ -663,8 +692,8 @@ export const analyzeTicketImage = async (imageSrc: string): Promise<AnalysisResp
             });
             
             if (candidates.length > 0) {
-                // Filter small noise based on height relative to cell
-                let validCandidates = candidates.filter(w => (w.bbox.h / item.spriteRect.h) >= 0.33);
+                // Filter small noise based on height relative to cell (Lowered to 20% to catch small digits)
+                let validCandidates = candidates.filter(w => (w.bbox.h / item.spriteRect.h) >= 0.20);
 
                 // Deduplicate overlapping boxes:
                 // Sort by confidence so we prefer higher confidence if overlap occurs
@@ -674,9 +703,9 @@ export const analyzeTicketImage = async (imageSrc: string): Promise<AnalysisResp
                 for (const c of validCandidates) {
                     const isDuplicate = uniqueCandidates.some(existing => {
                         const overlap = getOverlapArea(existing.bbox, c.bbox);
-                        const areaC = c.bbox.w * c.bbox.h;
-                        // If overlap covers > 50% of current box area, it's a duplicate of a higher confidence existing box
-                        return overlap > (areaC * 0.5);
+                        const areaCurrent = c.bbox.w * c.bbox.h;
+                        // If overlap covers > 50% of the current (smaller/lower conf) box, it's a duplicate/subset
+                        return overlap > (areaCurrent * 0.5);
                     });
                     
                     if (!isDuplicate) {

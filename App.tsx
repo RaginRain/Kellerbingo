@@ -93,13 +93,19 @@ export default function App() {
 
       // 2. Fast Validation (No OCR)
       const check = await validateTicketImage(resizedDataUrl);
+      
+      // If validation auto-rotated the image, update our raw processing image to use the corrected one
+      if (check.correctedImage) {
+          setRawImageForProcessing(check.correctedImage);
+      }
+
       setValidationResult(check || { isValid: true, message: "Validierung übersprungen", ticketCount: 1 });
       
-      // 3. Show Preview
+      // 3. Show Preview (Use overlay if available, otherwise fallback to corrected or original)
       if (check?.overlayImage) {
           setPreviewImage(check.overlayImage);
       } else {
-          setPreviewImage(resizedDataUrl); // Fallback
+          setPreviewImage(check.correctedImage || resizedDataUrl);
       }
       
     } catch (e) {

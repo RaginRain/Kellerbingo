@@ -1,4 +1,5 @@
 
+
 export interface BingoTicket {
   id: string; // The extracted ID (e.g., "160/400")
   internalId: string; // UUID for React keys
@@ -22,5 +23,6 @@ export interface ValidationResult {
     isValid: boolean;
     message: string;
     overlayImage?: string;
+    correctedImage?: string; // New: Returns the image if it was auto-rotated
     ticketCount: number;
 }
