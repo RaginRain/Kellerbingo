@@ -1,4 +1,4 @@
-import { createWorker } from 'tesseract.js';
+import Tesseract from 'tesseract.js';
 import { ScanResult, AnalysisResponse, ValidationResult } from "../types";
 
 // --- Types ---
@@ -21,8 +21,9 @@ let workerInstance: any | null = null;
 
 const getWorker = async (): Promise<any> => {
     if (!workerInstance) {
-        // Use named export createWorker
-        workerInstance = await createWorker('eng', 1, {
+        // Tesseract v5 Syntax: createWorker(langs, oem, options)
+        // This initializes the worker automatically with the specified language.
+        workerInstance = await Tesseract.createWorker('eng', 1, {
             logger: m => console.debug(m)
         });
         
@@ -344,32 +345,32 @@ const generateCompositeCanvas = (
     tickets: { rows: { y: number, h: number, cells: Rect[] }[] }[]
 ): { compositeCanvas: HTMLCanvasElement, map: MappedCell[] } => {
     
-    // INCREASED RESOLUTION FOR BETTER OCR
-    const cellSize = 160; 
-    // Massive padding to prevent Tesseract from merging adjacent numbers
-    const padding = 400; 
+    // SAFE SIZE FOR MOBILE: 100px cells + 100px padding
+    // Total width ~1000px, Total height ~1500px (for 3 tickets).
+    // This prevents "empty read" errors on mobile.
+    const cellSize = 100; 
+    const padding = 100; 
+    const idWidth = 400; 
     
     const ticketHeight = 3 * (cellSize + padding) + padding;
-    // Calculate canvas size dynamically to allow for wide ID fields
     let maxRowWidth = 6 * (cellSize + padding) + padding * 2; 
     
-    // Pass 1: Measure required width for ID fields to preserve aspect ratio
+    // Pass 1: Measure required width for ID fields
     tickets.forEach((ticket) => {
         const lastRow = interpolateGrid(ticket.rows)[2];
         const lastCell = lastRow.cells[5];
         if (lastCell) {
             // Refined Search Area for ID:
-            const searchW = lastCell.w * 1.8; 
+            const searchW = lastCell.w * 2.0; 
             const searchH = lastCell.h;
             
-            // w_target = h_target * (w_src / h_src)
             const targetIDWidth = Math.floor(cellSize * (searchW / searchH));
             const rowWidthWithID = 6 * (cellSize + padding) + targetIDWidth + padding * 3;
             if (rowWidthWithID > maxRowWidth) maxRowWidth = rowWidthWithID;
         }
     });
 
-    const canvasWidth = maxRowWidth;
+    const canvasWidth = Math.min(maxRowWidth, 2500);
     const canvasHeight = tickets.length * ticketHeight;
     
     const compositeCanvas = document.createElement('canvas');
@@ -437,17 +438,15 @@ const generateCompositeCanvas = (
             // Smart offset: Skip 35% of width to avoid left grid line and "Schein" prefix
             const searchX = lastCell.x + lastCell.w + (lastCell.w * 0.35); 
             const searchY = lastCell.y;
-            // Search width: 1.8x
+            // Search width: 1.8x (Reduced to cut right noise)
             const searchW = lastCell.w * 1.8; 
             const searchH = lastCell.h;
             
-            // Clamp to image bounds
             const safeX = Math.min(searchX, binaryCtx.canvas.width - 1);
             const safeY = Math.min(searchY, binaryCtx.canvas.height - 1);
             const safeW = Math.min(searchW, binaryCtx.canvas.width - safeX);
             const safeH = Math.min(searchH, binaryCtx.canvas.height - safeY);
 
-            // Calculate undistorted target width
             const ratio = (safeH > 0) ? safeW / safeH : 3;
             const targetIDWidth = Math.floor(cellSize * ratio);
 
@@ -458,8 +457,8 @@ const generateCompositeCanvas = (
                 h: cellSize 
             };
 
-            // Crop 20% margin for ID (Vertical) - Strictly remove grid lines
-            const cropMarginY = safeH * 0.20; 
+            // Crop 15% margin for ID (Vertical)
+            const cropMarginY = safeH * 0.15; 
 
             if (safeW > 10 && safeH > 10) {
                 try {
@@ -528,7 +527,6 @@ const detectTicketsInImage = (binaryCtx: CanvasRenderingContext2D, width: number
             if (dist < row.h * 0.2) {
                 currentTicketRows.push(row);
             } else {
-                // If we accumulated a multiple of 3 rows, assume they are multiple tickets touching
                 const chunks = Math.floor(currentTicketRows.length / 3);
                 for(let k=0; k<chunks; k++) {
                     ticketsRaw.push({ rows: currentTicketRows.slice(k*3, (k+1)*3) });
@@ -537,7 +535,6 @@ const detectTicketsInImage = (binaryCtx: CanvasRenderingContext2D, width: number
             }
         }
     }
-    // Final flush
     const chunks = Math.floor(currentTicketRows.length / 3);
     for(let k=0; k<chunks; k++) {
         ticketsRaw.push({ rows: currentTicketRows.slice(k*3, (k+1)*3) });
@@ -613,6 +610,13 @@ export const validateTicketImage = async (imageSrc: string): Promise<ValidationR
     };
 };
 
+// --- Helper for Overlap Detection ---
+const getOverlapArea = (r1: Rect, r2: Rect): number => {
+    const xOverlap = Math.max(0, Math.min(r1.x + r1.w, r2.x + r2.w) - Math.max(r1.x, r2.x));
+    const yOverlap = Math.max(0, Math.min(r1.y + r1.h, r2.y + r2.h) - Math.max(r1.y, r2.y));
+    return xOverlap * yOverlap;
+};
+
 // --- Main Analysis ---
 
 export const analyzeTicketImage = async (imageSrc: string): Promise<AnalysisResponse> => {
@@ -634,7 +638,7 @@ export const analyzeTicketImage = async (imageSrc: string): Promise<AnalysisResp
         throw new Error("OCR Timeout");
     }
     
-    // SAFE GUARD: Ensure ocrResult has data
+    // Safely map results using optional chaining to prevent crashes
     const ocrWords: DetectedWord[] = (ocrResult?.data?.words || []).map((w: any) => ({
         text: w.text.trim(),
         bbox: { x: w.bbox.x0, y: w.bbox.y0, w: w.bbox.x1 - w.bbox.x0, h: w.bbox.y1 - w.bbox.y0 },
@@ -659,34 +663,53 @@ export const analyzeTicketImage = async (imageSrc: string): Promise<AnalysisResp
             });
             
             if (candidates.length > 0) {
-                candidates.sort((a,b) => b.confidence - a.confidence);
-                const best = candidates[0];
-                
-                const rawText = best.text.trim();
-                const textH = best.bbox.h;
-                const cellH = item.spriteRect.h; 
-                
-                if (textH / cellH < 0.33) return;
+                // Filter small noise based on height relative to cell
+                let validCandidates = candidates.filter(w => (w.bbox.h / item.spriteRect.h) >= 0.33);
 
-                const alphaCount = (rawText.match(/[a-zA-Z]/g) || []).length;
-                const digitCount = (rawText.match(/[0-9]/g) || []).length;
-                const numberLikeAlpha = (rawText.match(/[IlOSBZAGT]/gi) || []).length;
-                const badAlpha = alphaCount - numberLikeAlpha;
-
-                if (badAlpha > digitCount && rawText.length > 1) {
-                    return;
+                // Deduplicate overlapping boxes:
+                // Sort by confidence so we prefer higher confidence if overlap occurs
+                validCandidates.sort((a, b) => b.confidence - a.confidence);
+                
+                const uniqueCandidates: DetectedWord[] = [];
+                for (const c of validCandidates) {
+                    const isDuplicate = uniqueCandidates.some(existing => {
+                        const overlap = getOverlapArea(existing.bbox, c.bbox);
+                        const areaC = c.bbox.w * c.bbox.h;
+                        // If overlap covers > 50% of current box area, it's a duplicate of a higher confidence existing box
+                        return overlap > (areaC * 0.5);
+                    });
+                    
+                    if (!isDuplicate) {
+                        uniqueCandidates.push(c);
+                    }
                 }
-
-                let txt = rawText.toUpperCase();
-                txt = txt.replace(/l/g, '1').replace(/I/g, '1').replace(/O/g, '0')
-                         .replace(/B/g, '8').replace(/S/g, '5').replace(/Z/g, '7')
-                         .replace(/A/g, '4').replace(/G/g, '6')
-                         .replace(/T/g, '7');
                 
-                const clean = txt.replace(/[^0-9]/g, '');
-                const num = parseInt(clean);
-                if (!isNaN(num) && num > 0 && num < 100) {
-                    finalResults[tIdx].grid[item.rowIndex][item.colIndex] = num;
+                if (uniqueCandidates.length > 0) {
+                     // Sort left-to-right to merge "4" and "2" into "42"
+                    uniqueCandidates.sort((a,b) => a.bbox.x - b.bbox.x);
+                    
+                    const rawText = uniqueCandidates.map(c => c.text).join('').trim();
+                    
+                    const alphaCount = (rawText.match(/[a-zA-Z]/g) || []).length;
+                    const digitCount = (rawText.match(/[0-9]/g) || []).length;
+                    const numberLikeAlpha = (rawText.match(/[IlOSBZAGT]/gi) || []).length;
+                    const badAlpha = alphaCount - numberLikeAlpha;
+
+                    if (badAlpha > digitCount && rawText.length > 1) {
+                        return;
+                    }
+
+                    let txt = rawText.toUpperCase();
+                    txt = txt.replace(/l/g, '1').replace(/I/g, '1').replace(/O/g, '0')
+                             .replace(/B/g, '8').replace(/S/g, '5').replace(/Z/g, '7')
+                             .replace(/A/g, '4').replace(/G/g, '6')
+                             .replace(/T/g, '7');
+                    
+                    const clean = txt.replace(/[^0-9]/g, '');
+                    const num = parseInt(clean);
+                    if (!isNaN(num) && num > 0 && num < 100) {
+                        finalResults[tIdx].grid[item.rowIndex][item.colIndex] = num;
+                    }
                 }
             }
         });
@@ -702,10 +725,12 @@ export const analyzeTicketImage = async (imageSrc: string): Promise<AnalysisResp
             });
             
             if (idWords.length > 0) {
+                // For IDs, we sort by X position to read left-to-right
+                idWords.sort((a, b) => a.bbox.x - b.bbox.x);
                 const fullText = idWords.map(w => w.text).join(' '); 
                 
                 // 1. Explicitly remove "Schein" / "Nr" / "No" prefixes (case insensitive)
-                let processed = fullText.replace(/[A-Za-zäöüÄÖÜß]{2,}/g, '');
+                let processed = fullText.replace(/(?:Schein|Nr\.?|No\.?)/gi, '');
                 
                 // 2. Normalize potential slash characters (| \ I l : .) to /
                 processed = processed.replace(/[|\\I:.]/g, '/');
@@ -737,9 +762,11 @@ export const analyzeTicketImage = async (imageSrc: string): Promise<AnalysisResp
     if (debugCtx) {
         debugCtx.lineWidth = 2;
         debugCtx.strokeStyle = 'blue';
-        ocrWords.forEach(w => {
-            debugCtx.strokeRect(w.bbox.x, w.bbox.y, w.bbox.w, w.bbox.h);
-        });
+        if (ocrWords) {
+            ocrWords.forEach(w => {
+                debugCtx.strokeRect(w.bbox.x, w.bbox.y, w.bbox.w, w.bbox.h);
+            });
+        }
     }
 
     return {

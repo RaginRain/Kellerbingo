@@ -1,4 +1,3 @@
-
 import React, { useState, useCallback, useRef } from 'react';
 import { BingoTicket, ValidationResult } from './types';
 import { analyzeTicketImage, validateTicketImage } from './services/geminiService';
@@ -43,6 +42,22 @@ const compressImage = (file: File): Promise<string> => {
   });
 };
 
+// Safe ID generator that works in non-secure contexts (HTTP)
+const generateId = () => {
+    if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+        return crypto.randomUUID();
+    }
+    return Math.random().toString(36).substring(2) + Date.now().toString(36);
+};
+
+// Types for Confirmation Modal
+interface ConfirmationState {
+    isOpen: boolean;
+    title: string;
+    message: string;
+    onConfirm: () => void;
+}
+
 export default function App() {
   const [tickets, setTickets] = useState<BingoTicket[]>([]);
   const [drawnNumbers, setDrawnNumbers] = useState<number[]>([]);
@@ -55,6 +70,9 @@ export default function App() {
   const [rawImageForProcessing, setRawImageForProcessing] = useState<string | null>(null);
   const [validationResult, setValidationResult] = useState<ValidationResult | null>(null);
   
+  // Custom Confirmation Modal State
+  const [confirmation, setConfirmation] = useState<ConfirmationState | null>(null);
+
   const drawnSet = new Set(drawnNumbers);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
@@ -75,10 +93,10 @@ export default function App() {
 
       // 2. Fast Validation (No OCR)
       const check = await validateTicketImage(resizedDataUrl);
-      setValidationResult(check);
+      setValidationResult(check || { isValid: true, message: "Validierung übersprungen", ticketCount: 1 });
       
       // 3. Show Preview
-      if (check.overlayImage) {
+      if (check?.overlayImage) {
           setPreviewImage(check.overlayImage);
       } else {
           setPreviewImage(resizedDataUrl); // Fallback
@@ -89,7 +107,6 @@ export default function App() {
       setError("Fehler beim Laden des Bildes.");
     } finally {
       setIsProcessing(false);
-      // Don't clear input yet, wait for confirm or retake
     }
   };
 
@@ -111,7 +128,7 @@ export default function App() {
 
         const newTickets: BingoTicket[] = results.map(result => ({
           id: result.ticketId,
-          internalId: crypto.randomUUID(),
+          internalId: generateId(),
           rows: result.grid,
           isWinner: false,
         }));
@@ -156,37 +173,57 @@ export default function App() {
     setDrawnNumbers(prev => prev.filter(n => n !== numToRemove));
   }, []);
 
-  const handleDeleteTicket = useCallback((internalId: string) => {
-    setTickets(prev => prev.filter(t => t.internalId !== internalId));
+  // Request to delete a single ticket
+  const handleDeleteTicketRequest = useCallback((internalId: string) => {
+    setConfirmation({
+        isOpen: true,
+        title: "Schein löschen",
+        message: "Möchtest du diesen Schein wirklich entfernen?",
+        onConfirm: () => {
+            setTickets(prev => prev.filter(t => t.internalId !== internalId));
+            setConfirmation(null);
+        }
+    });
   }, []);
 
-  const handleUpdateTicket = useCallback((internalId: string, newRows: number[][]) => {
+  const handleUpdateTicket = useCallback((internalId: string, newRows: number[][], newTicketId: string) => {
     setTickets(prev => prev.map(t => {
         if (t.internalId === internalId) {
-            return { ...t, rows: newRows };
+            return { ...t, rows: newRows, id: newTicketId };
         }
         return t;
     }));
   }, []);
 
-  const handleResetGame = () => {
-    if (window.confirm("Zahlen zurücksetzen?")) {
-        setDrawnNumbers([]);
-    }
+  const handleResetGameRequest = () => {
+    setConfirmation({
+        isOpen: true,
+        title: "Neues Spiel",
+        message: "Möchtest du alle gezogenen Zahlen zurücksetzen?",
+        onConfirm: () => {
+            setDrawnNumbers([]);
+            setConfirmation(null);
+        }
+    });
   };
 
-  const handleClearAll = () => {
-     if (window.confirm("Alles löschen?")) {
-        setDrawnNumbers([]);
-        setTickets([]);
-        setDebugImage(null);
-    }
+  const handleClearAllRequest = () => {
+     setConfirmation({
+        isOpen: true,
+        title: "Alles löschen",
+        message: "Warnung: Alle Scheine und Zahlen werden gelöscht!",
+        onConfirm: () => {
+            setDrawnNumbers([]);
+            setTickets([]);
+            setDebugImage(null);
+            setConfirmation(null);
+        }
+    });
   };
 
   const hasWinner = tickets.some(ticket => {
       if (!ticket.rows) return false;
       return ticket.rows.every(row => {
-          // Row needs at least one number AND all numbers marked
           const hasNumbers = row.some(cell => cell > 0);
           return hasNumbers && row.every(cell => cell === 0 || drawnSet.has(cell));
       });
@@ -195,9 +232,33 @@ export default function App() {
   return (
     <div className="flex flex-col h-full bg-slate-50 relative">
       
+      {/* CONFIRMATION MODAL - Using Fixed to ensure visibility over scroll */}
+      {confirmation && confirmation.isOpen && (
+          <div className="fixed inset-0 z-[100] bg-slate-900/80 backdrop-blur-sm flex items-center justify-center p-4" role="dialog">
+              <div className="bg-white rounded-xl shadow-2xl p-6 w-full max-w-sm animate-in fade-in zoom-in duration-200">
+                  <h3 className="text-lg font-bold text-slate-900 mb-2">{confirmation.title}</h3>
+                  <p className="text-slate-600 mb-6">{confirmation.message}</p>
+                  <div className="flex justify-end gap-3">
+                      <button 
+                        onClick={() => setConfirmation(null)}
+                        className="px-4 py-2 rounded-lg text-slate-600 font-semibold hover:bg-slate-100 transition-colors"
+                      >
+                          Abbrechen
+                      </button>
+                      <button 
+                        onClick={confirmation.onConfirm}
+                        className="px-4 py-2 rounded-lg bg-red-600 text-white font-semibold hover:bg-red-700 transition-colors shadow-sm"
+                      >
+                          Bestätigen
+                      </button>
+                  </div>
+              </div>
+          </div>
+      )}
+
       {/* PREVIEW MODAL */}
       {previewImage && (
-          <div className="absolute inset-0 z-50 bg-slate-900 flex flex-col items-center justify-center p-4" role="dialog" aria-modal="true">
+          <div className="fixed inset-0 z-[90] bg-slate-900 flex flex-col items-center justify-center p-4" role="dialog" aria-modal="true">
               <div className="w-full max-w-lg bg-black rounded-lg overflow-hidden shadow-2xl flex flex-col max-h-full">
                   <div className="relative flex-1 bg-black flex items-center justify-center overflow-hidden">
                       <img src={previewImage} alt="Preview" className="max-w-full max-h-full object-contain" />
@@ -232,17 +293,17 @@ export default function App() {
           </div>
       )}
 
-      <header className="bg-white border-b border-slate-200 px-4 py-3 flex items-center justify-between shadow-sm z-30 shrink-0">
+      <header className="bg-white border-b border-slate-200 px-4 py-3 flex items-center justify-between shadow-sm z-30 shrink-0 sticky top-0">
         <div className="flex items-center gap-2">
            <div className="w-8 h-8 bg-blue-600 rounded-lg flex items-center justify-center text-white font-bold text-lg">B</div>
            <h1 className="font-bold text-slate-800 text-lg">Bingo Master</h1>
         </div>
         <div className="flex gap-2">
             {tickets.length > 0 && (
-                <button onClick={handleResetGame} className="text-xs font-semibold text-blue-600 px-2 py-1 bg-blue-50 rounded">Reset</button>
+                <button onClick={handleResetGameRequest} className="text-xs font-semibold text-blue-600 px-3 py-2 bg-blue-50 rounded hover:bg-blue-100 transition-colors">Reset</button>
             )}
             {tickets.length > 0 && (
-                 <button onClick={handleClearAll} className="text-xs font-semibold text-red-600 px-2 py-1 bg-red-50 rounded">Löschen</button>
+                 <button onClick={handleClearAllRequest} className="text-xs font-semibold text-red-600 px-3 py-2 bg-red-50 rounded hover:bg-red-100 transition-colors">Löschen</button>
             )}
         </div>
       </header>
@@ -251,8 +312,12 @@ export default function App() {
         <div className="max-w-3xl mx-auto space-y-6 pb-24">
             
             {hasWinner && (
-                <div className="bg-yellow-100 border-l-4 border-yellow-500 text-yellow-800 p-4 rounded shadow-sm">
-                    <p className="font-bold text-lg">🎉 BINGO! 🎉</p>
+                <div className="bg-yellow-100 border-l-4 border-yellow-500 text-yellow-800 p-4 rounded shadow-sm flex items-center gap-3">
+                    <span className="text-2xl">🎉</span>
+                    <div>
+                        <p className="font-bold text-lg">BINGO!</p>
+                        <p className="text-sm opacity-90">Herzlichen Glückwunsch!</p>
+                    </div>
                 </div>
             )}
 
@@ -266,26 +331,29 @@ export default function App() {
                 <div className="bg-slate-900 rounded-xl p-4 shadow-lg border border-slate-700">
                     <h3 className="text-slate-200 font-semibold mb-2 flex items-center gap-2">
                         <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10 20l4-16m4 4l4 4-4 4M6 16l-4-4 4-4" /></svg>
-                        Debug Ansicht (OCR Input)
+                        Debug Ansicht
                     </h3>
-                    <div className="relative rounded overflow-hidden border border-slate-600">
+                    <div className="relative rounded overflow-hidden border border-slate-600 bg-white">
                          <img src={debugImage} className="w-full h-auto" alt="Debug Analysis" />
-                    </div>
-                    <div className="flex flex-wrap gap-4 text-xs mt-3 font-mono">
-                        <span className="flex items-center gap-1 text-blue-400"><span className="w-2 h-2 bg-blue-500 rounded-full"></span> Erkannte Texte</span>
                     </div>
                 </div>
             )}
 
             {tickets.length === 0 && !isProcessing && !debugImage && (
                 <div className="text-center py-12 px-4">
-                    <p className="text-slate-500">Fotografiere deine Bingo-Scheine.</p>
+                    <div className="w-20 h-20 bg-slate-100 rounded-full flex items-center justify-center mx-auto mb-4">
+                        <svg className="w-10 h-10 text-slate-300" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 9a2 2 0 012-2h.93a2 2 0 001.664-.89l.812-1.22A2 2 0 0110.07 4h3.86a2 2 0 011.664.89l.812 1.22A2 2 0 0018.07 7H19a2 2 0 012 2v9a2 2 0 01-2 2H5a2 2 0 01-2-2V9z" /></svg>
+                    </div>
+                    <p className="text-slate-500 font-medium">Noch keine Scheine gescannt.</p>
+                    <p className="text-slate-400 text-sm mt-1">Klicke auf die Kamera, um zu starten.</p>
                 </div>
             )}
 
             {isProcessing && (
-                <div className="bg-white rounded-xl p-6 shadow-sm border border-slate-200 text-center animate-pulse">
+                <div className="bg-white rounded-xl p-8 shadow-sm border border-slate-200 text-center animate-pulse">
+                     <div className="w-12 h-12 border-4 border-blue-200 border-t-blue-600 rounded-full animate-spin mx-auto mb-4"></div>
                      <p className="text-slate-600 font-medium">Analysiere Bild...</p>
+                     <p className="text-xs text-slate-400 mt-2">Dies kann einen Moment dauern.</p>
                 </div>
             )}
 
@@ -295,7 +363,7 @@ export default function App() {
                         key={ticket.internalId} 
                         ticket={ticket} 
                         drawnNumbers={drawnSet}
-                        onDelete={handleDeleteTicket}
+                        onDelete={handleDeleteTicketRequest}
                         onUpdate={handleUpdateTicket}
                     />
                 ))}
@@ -316,8 +384,8 @@ export default function App() {
                 onChange={handleFileUpload}
                 disabled={isProcessing}
             />
-            <div className={`w-14 h-14 rounded-full shadow-lg flex items-center justify-center text-white transition-all transform group-hover:scale-105 ${isProcessing ? 'bg-slate-400' : 'bg-blue-600 hover:bg-blue-700'}`}>
-                <svg xmlns="http://www.w3.org/2000/svg" className="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <div className={`w-14 h-14 rounded-full shadow-lg flex items-center justify-center text-white transition-all transform group-hover:scale-105 active:scale-95 ${isProcessing ? 'bg-slate-400 cursor-not-allowed' : 'bg-blue-600 hover:bg-blue-700'}`}>
+                <svg xmlns="http://www.w3.org/2000/svg" className="h-7 w-7" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 9a2 2 0 012-2h.93a2 2 0 001.664-.89l.812-1.22A2 2 0 0110.07 4h3.86a2 2 0 011.664.89l.812 1.22A2 2 0 0018.07 7H19a2 2 0 012 2v9a2 2 0 01-2 2H5a2 2 0 01-2-2V9z" />
                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 13a3 3 0 11-6 0 3 3 0 016 0z" />
                 </svg>
