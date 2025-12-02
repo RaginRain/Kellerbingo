@@ -104,7 +104,7 @@ export default function App() {
         
         if (debugDataUrl) setDebugImage(debugDataUrl);
 
-        if (results.length === 0) {
+        if (!results || results.length === 0) {
            setError("Keine Scheine erkannt. Bitte überprüfe das Debug-Bild unten.");
            return;
         }
@@ -184,9 +184,12 @@ export default function App() {
   };
 
   const hasWinner = tickets.some(ticket => {
-      return ticket.rows.every(row => 
-          row.every(cell => cell === 0 || drawnSet.has(cell))
-      );
+      if (!ticket.rows) return false;
+      return ticket.rows.every(row => {
+          // Row needs at least one number AND all numbers marked
+          const hasNumbers = row.some(cell => cell > 0);
+          return hasNumbers && row.every(cell => cell === 0 || drawnSet.has(cell));
+      });
   });
 
   return (
@@ -194,7 +197,7 @@ export default function App() {
       
       {/* PREVIEW MODAL */}
       {previewImage && (
-          <div className="absolute inset-0 z-50 bg-slate-900 flex flex-col items-center justify-center p-4">
+          <div className="absolute inset-0 z-50 bg-slate-900 flex flex-col items-center justify-center p-4" role="dialog" aria-modal="true">
               <div className="w-full max-w-lg bg-black rounded-lg overflow-hidden shadow-2xl flex flex-col max-h-full">
                   <div className="relative flex-1 bg-black flex items-center justify-center overflow-hidden">
                       <img src={previewImage} alt="Preview" className="max-w-full max-h-full object-contain" />

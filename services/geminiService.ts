@@ -1,4 +1,4 @@
-import Tesseract from 'tesseract.js';
+import { createWorker } from 'tesseract.js';
 import { ScanResult, AnalysisResponse, ValidationResult } from "../types";
 
 // --- Types ---
@@ -21,7 +21,8 @@ let workerInstance: any | null = null;
 
 const getWorker = async (): Promise<any> => {
     if (!workerInstance) {
-        workerInstance = await Tesseract.createWorker('eng', 1, {
+        // Use named export createWorker
+        workerInstance = await createWorker('eng', 1, {
             logger: m => console.debug(m)
         });
         
@@ -56,11 +57,9 @@ const createBinaryCanvas = (img: HTMLImageElement): { ctx: CanvasRenderingContex
     const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
     const data = imageData.data;
 
-    // Adaptive Thresholding
+    // Adaptive Thresholding - Sample entire image
     let sumR = 0;
     let count = 0;
-    
-    // Sample entire image
     const step = 20;
     for (let y = 0; y < canvas.height; y += step) {
         for (let x = 0; x < canvas.width; x += step) {
@@ -360,7 +359,7 @@ const generateCompositeCanvas = (
         const lastCell = lastRow.cells[5];
         if (lastCell) {
             // Refined Search Area for ID:
-            const searchW = lastCell.w * 1.8; // Reduced width (cropped from right)
+            const searchW = lastCell.w * 1.8; 
             const searchH = lastCell.h;
             
             // w_target = h_target * (w_src / h_src)
@@ -435,10 +434,11 @@ const generateCompositeCanvas = (
         const lastRow = interpolatedRows[2];
         const lastCell = lastRow.cells[5];
         if (lastCell) {
-            // Smart offset: Skip 30% of width to avoid left grid line and start of "Schein"
-            const searchX = lastCell.x + lastCell.w + (lastCell.w * 0.30); 
+            // Smart offset: Skip 35% of width to avoid left grid line and "Schein" prefix
+            const searchX = lastCell.x + lastCell.w + (lastCell.w * 0.35); 
             const searchY = lastCell.y;
-            const searchW = lastCell.w * 1.8; // Reduced width (Cropped from right)
+            // Search width: 1.8x
+            const searchW = lastCell.w * 1.8; 
             const searchH = lastCell.h;
             
             // Clamp to image bounds
@@ -458,7 +458,7 @@ const generateCompositeCanvas = (
                 h: cellSize 
             };
 
-            // Crop 20% margin for ID (Vertical) - Remove lines top/bottom
+            // Crop 20% margin for ID (Vertical) - Strictly remove grid lines
             const cropMarginY = safeH * 0.20; 
 
             if (safeW > 10 && safeH > 10) {
@@ -634,7 +634,8 @@ export const analyzeTicketImage = async (imageSrc: string): Promise<AnalysisResp
         throw new Error("OCR Timeout");
     }
     
-    const ocrWords: DetectedWord[] = ocrResult.data.words.map((w: any) => ({
+    // SAFE GUARD: Ensure ocrResult has data
+    const ocrWords: DetectedWord[] = (ocrResult?.data?.words || []).map((w: any) => ({
         text: w.text.trim(),
         bbox: { x: w.bbox.x0, y: w.bbox.y0, w: w.bbox.x1 - w.bbox.x0, h: w.bbox.y1 - w.bbox.y0 },
         confidence: w.confidence
@@ -703,11 +704,10 @@ export const analyzeTicketImage = async (imageSrc: string): Promise<AnalysisResp
             if (idWords.length > 0) {
                 const fullText = idWords.map(w => w.text).join(' '); 
                 
-                // Aggressive cleanup: Removing potential alpha prefixes (Schein, Nr, etc)
-                // Remove sequences of 2+ letters
+                // 1. Explicitly remove "Schein" / "Nr" / "No" prefixes (case insensitive)
                 let processed = fullText.replace(/[A-Za-zäöüÄÖÜß]{2,}/g, '');
                 
-                // Normalize potential slash characters (| \ I l : .) to /
+                // 2. Normalize potential slash characters (| \ I l : .) to /
                 processed = processed.replace(/[|\\I:.]/g, '/');
 
                 // 3. Search for pattern: Number / Number

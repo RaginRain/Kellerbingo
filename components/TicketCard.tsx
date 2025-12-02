@@ -10,17 +10,22 @@ interface TicketCardProps {
 
 export const TicketCard: React.FC<TicketCardProps> = ({ ticket, drawnNumbers, onDelete, onUpdate }) => {
   const [isEditing, setIsEditing] = useState(false);
-  const [editGrid, setEditGrid] = useState<number[][]>(ticket.rows);
+  const [editGrid, setEditGrid] = useState<number[][]>(ticket.rows || []);
 
   // Calculate row completion
   const rowStatus = useMemo(() => {
+    if (!ticket.rows) return [];
     return ticket.rows.map(row => {
-      const isComplete = row.every(num => num === 0 || drawnNumbers.has(num));
+      // Row is only valid if it contains at least one non-zero number
+      // and all numbers in it are drawn or zero.
+      // This prevents scan errors (all zeros) from being counted as wins.
+      const hasNumbers = row.some(num => num > 0);
+      const isComplete = hasNumbers && row.every(num => num === 0 || drawnNumbers.has(num));
       return isComplete;
     });
   }, [ticket.rows, drawnNumbers]);
 
-  const isFullWinner = rowStatus.every(s => s === true);
+  const isFullWinner = rowStatus.length > 0 && rowStatus.every(s => s === true);
 
   const handleSave = () => {
     if (onUpdate) {
@@ -56,6 +61,8 @@ export const TicketCard: React.FC<TicketCardProps> = ({ ticket, drawnNumbers, on
     });
     setEditGrid(newGrid);
   };
+
+  if (!ticket.rows) return null;
 
   return (
     <div className={`relative rounded-xl shadow-md border-2 overflow-hidden transition-all duration-300 ${isFullWinner && !isEditing ? 'border-yellow-400 bg-yellow-50 shadow-yellow-200 shadow-lg scale-[1.02]' : 'border-slate-200 bg-white'}`}>
